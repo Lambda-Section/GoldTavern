@@ -87,6 +87,7 @@ ggplot(melt(correlation_matrix), aes(x = Var1, y = Var2, fill = value)) +
   labs(title = "Correlation Heatmap")
 
 
+
 # --- Prophet Model ---
 # This creates a 24-hour gold price forecast 
 # that accounts for historical patterns, sentiment, and Fed rates.
@@ -109,6 +110,39 @@ prophet_forecast <- predict(prophet_model, future)$yhat
 # yhat statistical notation for a predicted value, "y" value, "hat" estimate
 # Extracts just the prediction
 prophet_forecast <- tail(prophet_forecast, 24)  # Last 24 hours
+
+
+
+# --- LSTM Model ---
+# Prepare data (normalize and reshape)
+# Creates a function that normalizes values to range [0,1] 
+# which helps neural networks train better
+scale_data <- function(x) (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+scaled_data <- apply(df[, c("y", "sentiment", "fed_rates")], 2, scale_data)
+# Defines how many previous time steps to use for prediction (10 hours of historical data)
+lookback <- 10
+X <- array(NA, dim = c(nrow(scaled_data) - lookback, lookback, 3))
+y <- numeric(nrow(scaled_data) - lookback)
+# For each time point, take 10 consecutive hours of data
+# Store these sequences in X
+# Store the gold price from the 11th hour in y (what we want to predict)
+for (i in 1:(nrow(scaled_data) - lookback)) {
+  X[i,,] <- scaled_data[i:(i + lookback - 1), ]
+  y[i] <- scaled_data[i + lookback, 1]  # Predict gold price
+}
+# This creates a sliding window approach where each input is 10 hours of data,
+# and each output is the gold price in the 11th hour.
+
+
+
+# Define and train LSTM
+lstm_model <- keras_model_sequential() %>%
+  layer_lstm(units = 50, return_sequences = TRUE, input_shape = c(lookback, 3)) %>%
+  layer_lstm(units = 50) %>%
+  layer_dense(units = 1)
+lstm_model %>% compile(optimizer = "adam", loss = "mse")
+lstm_model %>% fit(X, y, epochs = 5, batch_size = 32, verbose = 1)
+
 
 
 
