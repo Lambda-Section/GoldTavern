@@ -1,6 +1,12 @@
+# DISCLAIMER: This code is created by a hobbyist for educational and research purposes only.
+# It is NOT intended to provide financial advice. The predictions and analyses generated
+# by this system should not be used as the basis for any investment decisions.
+# I am not a financial advisor, and this tool should be used at your own risk.
+# Past performance is not indicative of future results.
+
 # Install missing packages first
 if (!require("fredr")) install.packages("fredr")
-if (!require("prophet")) install.packages("prophet") 
+if (!require("prophet")) install.packages("prophet")
 if (!require("rugarch")) install.packages("rugarch")
 if (!require("keras")) install.packages("keras")
 if (!require("reshape2")) install.packages("reshape2")
@@ -18,7 +24,7 @@ library(tidyverse)   # Data manipulation
 
 # Setting up parralel processing
 cl <- makeCluster(detectCores())
-registerDoParallel(cl)  
+registerDoParallel(cl)
 
 # --- Data Collection ---
 # 1. Gold Prices (Hourly from Yahoo Finance)
@@ -31,7 +37,7 @@ df <- data.frame(ds = index(gold_prices), y = as.numeric(gold_prices) %>% na.omi
 # Uses index(gold_prices) to extract the timestamps
 # Timestamps are specific points in time
 # Likely stored as POSIXct or Date Objects
-# POSIXct A date-time class that stores time 
+# POSIXct A date-time class that stores time
 # as seconds since January 1, 1970 (Unix epoch)
 
 # Data Collection Visualization
@@ -59,23 +65,23 @@ ggplot(df, aes(x = ds, y = sentiment)) +
 # The selected code retrieves and integrates Federal Reserve interest rate data
 fredr_set_key("your_api_key")  # Get key from fred.stlouisfed.org
 # Fetches the Daily Federal Funds Rate (DFF) from March 1 to April 7, 2025
-fed_rates <- fredr(series_id = "DFF", observation_start = as.Date("2025-03-01"), 
+fed_rates <- fredr(series_id = "DFF", observation_start = as.Date("2025-03-01"),
                    observation_end = as.Date("2025-04-07"))
 # Processes the data by:
 # Renaming columns (date → ds, value → fed_rates)
 # Converting dates to POSIXct format to match the timestamp format in the main dataframe
-fed_rates <- fed_rates %>% 
+fed_rates <- fed_rates %>%
   select(ds = date, fed_rates = value) %>%
   mutate(ds = as.POSIXct(ds))  # Match timestamp format
 # Merges the Fed rates with the main dataframe:
-df <- merge(df, fed_rates, by = "ds", all.x = TRUE) %>% 
+df <- merge(df, fed_rates, by = "ds", all.x = TRUE) %>%
   fill(fed_rates, .direction = "down")  # Forward-fill missing Fed rates
 
 # After Fed Rates Visualization
 ggplot(df, aes(x = ds)) +
   geom_line(aes(y = y, color = "Gold Price")) +
   geom_line(aes(y = fed_rates * 100, color = "Fed Rate (scaled)")) +
-  scale_color_manual(values = c("Gold Price" = "gold", "Fed Rate (scaled)" = "red")) + 
+  scale_color_manual(values = c("Gold Price" = "gold", "Fed Rate (scaled)" = "red")) +
   labs(title = "Gold Price vs Fed Rate", x = "Date", y = "Value")
 
 # Correlation heatmap
@@ -89,7 +95,7 @@ ggplot(melt(correlation_matrix), aes(x = Var1, y = Var2, fill = value)) +
 
 
 # --- Prophet Model ---
-# This creates a 24-hour gold price forecast 
+# This creates a 24-hour gold price forecast
 # that accounts for historical patterns, sentiment, and Fed rates.
 prophet_data <- df %>% select(ds, y, sentiment, fed_rates) %>% na.omit()
 # Creates a Prophet model that accounts for daily and weekly patterns in gold prices
@@ -115,7 +121,7 @@ prophet_forecast <- tail(prophet_forecast, 24)  # Last 24 hours
 
 # --- LSTM Model ---
 # Prepare data (normalize and reshape)
-# Creates a function that normalizes values to range [0,1] 
+# Creates a function that normalizes values to range [0,1]
 # which helps neural networks train better
 scale_data <- function(x) (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
 scaled_data <- apply(df[, c("y", "sentiment", "fed_rates")], 2, scale_data)
