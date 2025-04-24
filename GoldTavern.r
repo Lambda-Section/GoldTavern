@@ -21,24 +21,42 @@ library(rugarch)     # GARCH
 library(keras)       # LSTM
 library(doParallel)  # Parallel processing
 library(tidyverse)   # Data manipulation
+library(plotly)      # Interactive plots
+library(flexdashboard) # Dashboard
+library(logger)      # Logging
+library(sentimentr)  # Sentiment analysis
+library(Metrics)     # Model evaluation metrics
 
+
+# Logging setup
+log_appender(appender_file("goldtavern.log"))
+log_info("Starting GoldTavern execution on {Sys.Date()}")
 # Setting up parralel processing
-cl <- makeCluster(detectCores())
+cl <- makeCluster(detectCores() - 1)
+# It Reserve one core for system operations
 registerDoParallel(cl)
+log_info("Parallel processing initialized with {getDoParWorkers()} cores")
+
 
 # --- Data Collection ---
 # 1. Gold Prices (Hourly from Yahoo Finance)
-getSymbols("GC=F", src = "yahoo", from = "2010-01-01", to = "2023-01-01")
+tryCatch({
+  getSymbols("GC=F", src = "yahoo", from = "2010-01-01", to = "2023-01-01")
 # gold_prices is likely a time series object (xts/zoo class) from the quantmod package
 # XTS/ZOO classes are specialized R data structures for time series
 # eXtensible Time Series (Time-based Indexing) / Z's Ordered Observations (irregular time series)
-gold_prices <- Cl(GC=F)
-df <- data.frame(ds = index(gold_prices), y = as.numeric(gold_prices) %>% na.omit())
+  gold_prices <- Cl(GC=F)
+  df <- data.frame(ds = index(gold_prices), y = as.numeric(gold_prices) %>% na.omit())
 # Uses index(gold_prices) to extract the timestamps
 # Timestamps are specific points in time
 # Likely stored as POSIXct or Date Objects
 # POSIXct A date-time class that stores time
 # as seconds since January 1, 1970 (Unix epoch)
+  log_info("Gold prices loaded successfully: {nrow(df)} observations")
+  }, error = function(e) {
+  log_error("Error loading gold prices: {conditionMessage(e)}")
+  stop("Gold prices loading failed")
+})
 
 # Data Collection Visualization
 ggplot(df, aes(x = ds, y = y)) +
@@ -140,16 +158,18 @@ for (i in 1:(nrow(scaled_data) - lookback)) {
 # and each output is the gold price in the 11th hour.
 
 
-
 # Define and train LSTM
+# Initializes a sequential Keras model where layers are stacked linearly
 lstm_model <- keras_model_sequential() %>%
+  # LSTM layer with 50 units that returns sequences.
   layer_lstm(units = 50, return_sequences = TRUE, input_shape = c(lookback, 3)) %>%
+  # LSTM layer with 50 units that returns only the final output
   layer_lstm(units = 50) %>%
+  # Dense output layer with 1 unit (single price prediction)
   layer_dense(units = 1)
 lstm_model %>% compile(optimizer = "adam", loss = "mse")
+# Update weights after seeing 32 samples
 lstm_model %>% fit(X, y, epochs = 5, batch_size = 32, verbose = 1)
-
-
 
 
 # Interactive time series plots
@@ -162,3 +182,44 @@ ggplotly(p)
 # Interactive dashboard
 library(flexdashboard)
 # Create an Rmd file with flexdashboard layout
+
+# Forecast (1-step, repeated)
+last_sequence <- scaled_data[(nrow(scaled_data) - lookback + 1):nrow(scaled_data), ]
+last_sequence <- array(last_sequence, dim = c(1, lookback, 3))
+lstm_forecast_raw <- predict(lstm_model, last_sequence)
+lstm_forecast <- lstm_forecast_raw * (max(df$y, na.rm = TRUE) - min(df$y, na.rm = TRUE)) + min(df$y, na.rm = TRUE)
+lstm_forecast_full <- rep(lstm_forecast, 24)  # Repeat for 24 hours
+
+# --- GARCH Model ---
+# Calculate log returns of gold price in percentages, a commmon transformation for financial time series.
+returns <- diff(log(df$y)) * 100  # Log returns in percent
+# Specifies a standard GARCH(1,1) model
+garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+                         mean.model = list(armaOrder = c(0, 0)))
+# Fit the GARCH model to the returns data, excluding NA values
+garch_fit <- ugarchfit(spec = garch_spec, data = returns[!is.na(returns)])
+garch_vol <- sigma(garch_fit)
+# Gets the most recent gold price.
+last_price <- tail(df$y, 1)
+# Creates a one-step forecast by applying the predicted volatility to the last price.
+garch_forecast <- last_price * (1 + tail(garch_vol, 1) / 100)  # 1-step
+# Repeats this single forecast value 24 times to match the 24-hour forecast 
+# horizon used by the other models.
+garch_forecast_full <- rep(garch_forecast, 24)  # Repeat for 24 hours
+
+# --- Ensemble ---
+ensemble_forecast <- 0.4 * lstm_forecast_full + 0.3 * prophet_forecast + 0.3 * garch_forecast_full
+
+# --- Output ---
+cat("Gold Price Forecast for April 8, 2025 (GMT, first 5 hours):\n")
+print(head(ensemble_forecast, 5))
+
+# Plot
+future_dates <- seq(from = as.POSIXct("2025-04-08 00:00:00", tz = "GMT"),
+                    by = "hour", length.out = 24)
+plot(future_dates, ensemble_forecast, type = "l", col = "blue",
+     main = "Gold Price Forecast (April 8, 2025)", xlab = "Time (GMT)", ylab = "Price (USD)")
+grid()
+
+# Stop cluster
+stopCluster(cl)
