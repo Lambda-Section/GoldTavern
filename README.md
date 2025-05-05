@@ -26,5 +26,10 @@ Our ensemble approach combines multiple forecasting techniques:
 - **Data Structures**: XTS/Zoo time series objects for efficient time-based operations
 - **Performance Optimization**: Parallel processing via doParallel, potential GPU acceleration via TensorFlow
 
+## LinkedIn Sharing
+This project includes markdown templates for LinkedIn sharing:
+- Project description for LinkedIn profile showcase
+- Weekly update templates for consistent posting
+
 ## License
 MIT License - See LICENSE file for details

@@ -14,15 +14,19 @@ if (!require("plotly")) install.packages("plotly")
 if (!require("flexdashboard")) install.packages("flexdashboard")
 
 # Then load libraries
-library(quantmod)    # Yahoo Finance data
-library(fredr)       # FRED API
+# Data Fetching
+library(quantmod)    # Yahoo Finance data, quantmod fetches financial data
+library(fredr)       # FRED API, fredr accesses economic indicators
+# Modeling
 library(prophet)     # Prophet model
 library(rugarch)     # GARCH
-library(keras)       # LSTM
+library(keras)       # LSTM, keras integrates TensorFlow for LSTM
 library(doParallel)  # Parallel processing
 library(tidyverse)   # Data manipulation
+# Visualization
 library(plotly)      # Interactive plots
 library(flexdashboard) # Dashboard
+# Utilities
 library(logger)      # Logging
 library(sentimentr)  # Sentiment analysis
 library(Metrics)     # Model evaluation metrics
@@ -34,12 +38,14 @@ log_info("Starting GoldTavern execution on {Sys.Date()}")
 # Setting up parralel processing
 cl <- makeCluster(detectCores() - 1)
 # It Reserve one core for system operations
+# Math Insight: Parallelism reduces runtime for independent tasks but adds overhead for small datasets.
 registerDoParallel(cl)
 log_info("Parallel processing initialized with {getDoParWorkers()} cores")
 
 
 # --- Data Collection ---
 # 1. Gold Prices (Hourly from Yahoo Finance)
+# Quantmod fetches Yahoo Finance data as an xts (eXtensible Time Series) object, indexed by POSIXct timestamps (seconds since 1970). Cl() extracts closing prices.
 tryCatch({
   getSymbols("GC=F", src = "yahoo", from = "2010-01-01", to = "2023-01-01")
 # gold_prices is likely a time series object (xts/zoo class) from the quantmod package
@@ -203,15 +209,111 @@ garch_vol <- sigma(garch_fit)
 last_price <- tail(df$y, 1)
 # Creates a one-step forecast by applying the predicted volatility to the last price.
 garch_forecast <- last_price * (1 + tail(garch_vol, 1) / 100)  # 1-step
-# Repeats this single forecast value 24 times to match the 24-hour forecast 
+# Repeats this single forecast value 24 times to match the 24-hour forecast
 # horizon used by the other models.
 garch_forecast_full <- rep(garch_forecast, 24)  # Repeat for 24 hours
 
 # --- Ensemble ---
+# Combines predictions from LSTM, Prophet, and GARCH models with different weights
 ensemble_forecast <- 0.4 * lstm_forecast_full + 0.3 * prophet_forecast + 0.3 * garch_forecast_full
 
+# --- Ray Dalio Economic Principles Implementation ---
+# Install required packages
+if (!require("quantmod")) install.packages("quantmod")
+if (!require("TTR")) install.packages("TTR")
+
+# Load libraries
+library(quantmod)
+library(TTR)
+
+# 1. Debt Cycle Analysis
+# Dalio emphasizes long-term and short-term debt cycles
+log_info("Adding Ray Dalio's debt cycle analysis")
+
+# Get debt-to-GDP ratio from FRED
+tryCatch({
+  fredr_set_key("your_api_key")
+  debt_to_gdp <- fredr(series_id = "GFDEGDQ188S", # Federal Debt to GDP
+                      observation_start = as.Date("2010-01-01"))
+
+  # Calculate rate of change in debt
+  debt_to_gdp$roc <- ROC(debt_to_gdp$value, n = 4) # Quarterly change
+
+  # Identify debt cycle phase
+  debt_cycle_threshold <- 2.5 # Percentage point threshold
+  debt_to_gdp$cycle_phase <- ifelse(debt_to_gdp$roc > debt_cycle_threshold,
+                                   "Expansion", "Contraction")
+
+  # Get latest debt cycle phase
+  current_debt_phase <- tail(debt_to_gdp$cycle_phase, 1)
+  log_info("Current debt cycle phase: {current_debt_phase}")
+
+  # 2. Productivity Growth
+  productivity <- fredr(series_id = "OPHNFB", # Output per hour
+                       observation_start = as.Date("2010-01-01"))
+  productivity$roc <- ROC(productivity$value, n = 4)
+  current_productivity_growth <- tail(productivity$roc, 1)
+
+  # 3. Create Dalio's "Reflation/Deflation" indicator
+  inflation <- fredr(series_id = "CPIAUCSL",
+                    observation_start = as.Date("2010-01-01"))
+  inflation$roc <- ROC(inflation$value, n = 12) # Annual inflation
+  current_inflation <- tail(inflation$roc, 1)
+
+  # Combine into Dalio's quadrant framework
+  # 1: Rising Growth, Rising Inflation (Gold positive)
+  # 2: Rising Growth, Falling Inflation (Gold neutral)
+  # 3: Falling Growth, Falling Inflation (Gold negative)
+  # 4: Falling Growth, Rising Inflation (Gold very positive)
+
+  growth_rising <- tail(productivity$roc, 1) > 0
+  inflation_rising <- tail(inflation$roc, 1) > tail(inflation$roc, 2)[1]
+
+  dalio_quadrant <- case_when(
+    growth_rising & inflation_rising ~ 1,
+    growth_rising & !inflation_rising ~ 2,
+    !growth_rising & !inflation_rising ~ 3,
+    !growth_rising & inflation_rising ~ 4
+  )
+
+  # Adjust ensemble weights based on Dalio's principles
+  dalio_gold_bias <- case_when(
+    dalio_quadrant == 1 ~ 0.2,  # Positive
+    dalio_quadrant == 2 ~ 0,    # Neutral
+    dalio_quadrant == 3 ~ -0.1, # Negative
+    dalio_quadrant == 4 ~ 0.3   # Very positive
+  )
+
+  # Apply Dalio bias to forecast
+  ensemble_forecast <- ensemble_forecast * (1 + dalio_gold_bias)
+
+  log_info("Applied Ray Dalio economic principles: Quadrant {dalio_quadrant}")
+
+}, error = function(e) {
+  log_error("Error implementing Dalio principles: {conditionMessage(e)}")
+})
+
+# Add visualization of Dalio's framework
+dalio_plot <- ggplot() +
+  geom_point(aes(x = tail(productivity$roc, 20),
+                y = tail(inflation$roc, 20),
+                color = seq_along(tail(productivity$roc, 20)))) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(title = "Dalio's Economic Framework",
+       x = "Productivity Growth",
+       y = "Inflation",
+       color = "Time") +
+  annotate("text", x = 1, y = 1, label = "Q1: Gold +") +
+  annotate("text", x = 1, y = -1, label = "Q2: Gold =") +
+  annotate("text", x = -1, y = -1, label = "Q3: Gold -") +
+  annotate("text", x = -1, y = 1, label = "Q4: Gold ++")
+
 # --- Output ---
+# Prints the first 5 hours of predictions for April 8, 2025
 cat("Gold Price Forecast for April 8, 2025 (GMT, first 5 hours):\n")
+# Shows the forecast values in the console
 print(head(ensemble_forecast, 5))
 
 # Plot
@@ -222,4 +324,169 @@ plot(future_dates, ensemble_forecast, type = "l", col = "blue",
 grid()
 
 # Stop cluster
+# Properly releases system resources when the script finishes
 stopCluster(cl)
+
+# --- Real-time Data Integration ---
+# Install and load required packages
+if (!require("IBrokers")) install.packages("IBrokers")
+library(IBrokers)  # For Interactive Brokers API
+
+# Connect to data provider (Interactive Brokers example)
+tws <- twsConnect(clientId = 1)
+log_info("Connected to Interactive Brokers TWS")
+
+# Function to fetch real-time gold prices
+get_realtime_gold <- function() {
+  contract <- twsFuture("GC", exch = "NYMEX")
+  realtime_data <- reqMktData(tws, contract)
+  return(realtime_data$LAST)
+}
+
+# Schedule regular data updates
+realtime_update <- function() {
+  current_price <- get_realtime_gold()
+  # Update your dataframe with new data
+  df <- rbind(df, data.frame(ds = Sys.time(), y = current_price))
+  # Re-run models with updated data
+  # ...
+}
+
+# --- Backtesting Framework ---
+if (!require("quantstrat")) install.packages("quantstrat")
+library(quantstrat)
+
+# Initialize backtesting environment
+initDate <- "2010-01-01"
+currency("USD")
+stock("GOLD", currency = "USD")
+
+# Create strategy
+strategy <- "GoldTavernStrategy"
+strategy.st <- portfolio.st <- account.st <- strategy
+rm.strat(strategy.st)
+initPortf(portfolio.st, symbols = "GOLD", initDate = initDate)
+initAcct(account.st, portfolios = portfolio.st, initDate = initDate)
+initOrders(portfolio.st, initDate = initDate)
+strategy(strategy.st, store = TRUE)
+
+# Add signals based on ensemble forecast
+add.signal(strategy.st, name = "sigThreshold",
+           arguments = list(column = "ensemble_forecast",
+                           threshold = 0.5,
+                           relationship = "gt",
+                           cross = TRUE),
+           label = "long")
+
+# Add rules
+add.rule(strategy.st, name = "ruleSignal",
+         arguments = list(sigcol = "long",
+                         sigval = TRUE,
+                         orderqty = 100,
+                         ordertype = "market",
+                         orderside = "long"),
+         type = "enter")
+
+# Run backtest
+applyStrategy(strategy.st, portfolios = portfolio.st)
+updatePortf(portfolio.st)
+chart.Posn(portfolio.st, "GOLD")
+
+# --- Risk Management ---
+# Position sizing based on volatility
+calculate_position_size <- function(capital, risk_percent, current_volatility) {
+  risk_amount <- capital * (risk_percent / 100)
+  position_size <- risk_amount / current_volatility
+  return(floor(position_size))
+}
+
+# Stop loss and take profit calculation
+calculate_stops <- function(entry_price, volatility, risk_reward_ratio = 2) {
+  atr_multiple <- 2  # Use 2x ATR for stop loss
+  stop_loss <- entry_price - (atr_multiple * volatility)
+  take_profit <- entry_price + (atr_multiple * volatility * risk_reward_ratio)
+  return(list(stop_loss = stop_loss, take_profit = take_profit))
+}
+
+# Kelly criterion for optimal position sizing
+kelly_criterion <- function(win_rate, win_loss_ratio) {
+  kelly_percentage <- win_rate - ((1 - win_rate) / win_loss_ratio)
+  return(max(0, kelly_percentage * 0.5))  # Half-Kelly for safety
+}
+
+# --- Trade Execution ---
+# Function to place orders via broker API
+place_order <- function(order_type, quantity, price = NULL) {
+  contract <- twsFuture("GC", exch = "NYMEX")
+
+  if (order_type == "MARKET") {
+    order <- twsOrder(orderId = reqIds(tws),
+                     action = "BUY",
+                     totalQuantity = quantity,
+                     orderType = "MKT")
+  } else if (order_type == "LIMIT") {
+    order <- twsOrder(orderId = reqIds(tws),
+                     action = "BUY",
+                     totalQuantity = quantity,
+                     orderType = "LMT",
+                     lmtPrice = price)
+  }
+
+  placeOrder(tws, contract, order)
+  log_info("Order placed: {order_type}, Quantity: {quantity}")
+}
+
+# Trading logic
+execute_trading_strategy <- function() {
+  # Get current position
+  current_position <- 0  # Replace with actual position query
+
+  # Get forecast and current price
+  current_price <- get_realtime_gold()
+
+  # Decision logic based on ensemble forecast
+  if (tail(ensemble_forecast, 1) > current_price * 1.01 && current_position == 0) {
+    # Bullish signal with 1% expected gain
+    position_size <- calculate_position_size(100000, 2, tail(garch_vol, 1))
+    place_order("MARKET", position_size)
+
+    # Set stop loss and take profit
+    stops <- calculate_stops(current_price, tail(garch_vol, 1))
+    # Place stop loss and take profit orders
+  }
+}
+
+# --- Performance Monitoring ---
+if (!require("PerformanceAnalytics")) install.packages("PerformanceAnalytics")
+library(PerformanceAnalytics)
+
+# Track trading performance
+track_performance <- function() {
+  # Calculate returns
+  returns <- ROC(portfolio_value)
+
+  # Performance metrics
+  sharpe <- SharpeRatio(returns, Rf = 0.02/252)
+  drawdown <- maxDrawdown(returns)
+  cagr <- Return.annualized(returns)
+
+  # Create performance dashboard
+  performance_data <- data.frame(
+    Metric = c("Sharpe Ratio", "Max Drawdown", "CAGR", "Win Rate"),
+    Value = c(sharpe, drawdown, cagr, win_count/total_trades)
+  )
+
+  # Log performance
+  log_info("Performance update: Sharpe={sharpe}, Drawdown={drawdown}")
+
+  # Create performance charts
+  charts.PerformanceSummary(returns)
+}
+
+# Schedule regular performance updates
+schedule_performance_update <- function() {
+  track_performance()
+  # Schedule next update
+}
+
+
